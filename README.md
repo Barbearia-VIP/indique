@@ -20,6 +20,75 @@ npm run lint
 O build usa caminhos relativos (`base: './'`), então a pasta `dist/` pode ser publicada em qualquer
 hospedagem estática ou subpasta (GitHub Pages, Netlify, Vercel, S3…).
 
+## Deploy em https://indique.barbearia.vip
+
+O site é publicado num servidor próprio com nginx, via [`scripts/deploy.sh`](scripts/deploy.sh)
+(build local + `rsync` por SSH). Cada deploy vira uma pasta nova em `releases/`, e o link
+`current` é trocado de forma atômica. Assim não há site "pela metade" e o rollback é instantâneo.
+
+```
+/var/www/indique.barbearia.vip/
+├── current -> releases/20260924-231500-3fa7845   # versão no ar
+└── releases/                                     # últimas 5 versões
+```
+
+### Pré-requisitos
+
+- **DNS**: registro `A` (e `AAAA`, se houver IPv6) de `indique.barbearia.vip` apontando para o servidor.
+- **Servidor** (Ubuntu/Debian): `sudo apt install nginx certbot rsync`, portas 80 e 443 liberadas
+  e um usuário com acesso SSH por chave e `sudo` (ex.: `deploy`).
+- **Sua máquina**: Node 22, `ssh`, `rsync` e `curl`.
+
+### Configuração
+
+```bash
+cp .env.deploy.example .env.deploy   # não vai para o git
+# preencha DEPLOY_HOST, DEPLOY_USER e CERTBOT_EMAIL
+```
+
+### Primeira vez: preparar o servidor
+
+```bash
+scripts/deploy.sh setup
+```
+
+Esse comando cria as pastas, instala [`deploy/nginx/indique.barbearia.vip.conf`](deploy/nginx/indique.barbearia.vip.conf),
+emite o certificado HTTPS no Let's Encrypt (renovação automática do certbot, com reload do nginx)
+e valida tudo com `nginx -t` antes de recarregar. Se a validação falhar, a configuração anterior
+é restaurada. Pode ser rodado de novo sempre que a configuração do nginx mudar.
+
+### Publicar, voltar versão, listar
+
+```bash
+scripts/deploy.sh            # npm ci + lint + build, envia, ativa e confere o site no ar
+scripts/deploy.sh rollback   # volta para a versão anterior
+scripts/deploy.sh releases   # lista as versões (a marcada com * está no ar)
+```
+
+Opções (variáveis de ambiente ou `.env.deploy`):
+
+| Variável | Padrão | Para quê |
+| --- | --- | --- |
+| `DEPLOY_HOST` | — | IP ou hostname do servidor (obrigatório) |
+| `DEPLOY_USER` / `DEPLOY_PORT` | `deploy` / `22` | acesso SSH |
+| `DEPLOY_SSH_KEY` | — | chave SSH específica |
+| `DEPLOY_PATH` | `/var/www/indique.barbearia.vip` | pasta do site no servidor |
+| `DEPLOY_KEEP_RELEASES` | `5` | versões guardadas para rollback |
+| `CERTBOT_EMAIL` | — | e-mail do Let's Encrypt (só no primeiro `setup`) |
+| `SKIP_BUILD=1` | — | publica o `dist/` existente sem rebuild |
+| `SKIP_HEALTHCHECK=1` | — | não confere o site depois de publicar |
+| `DEPLOY_CURL_OPTS` | — | ex.: `--resolve indique.barbearia.vip:443:IP` para conferir antes do DNS propagar |
+
+### O que o nginx faz
+
+- HTTP → HTTPS (301), HTTP/2 e HSTS; validação do Let's Encrypt em `/.well-known/acme-challenge/`.
+- `index.html` sempre revalidado (`no-cache`), então o público vê a versão nova assim que ela é publicada.
+  Arquivos de `/assets/` (com hash no nome) ficam em cache por 1 ano, e as imagens por 7 dias.
+- Cabeçalhos de segurança, incluindo uma Content-Security-Policy restrita ao próprio domínio.
+- Gzip para HTML, CSS, JS e SVG.
+- Endereço inexistente (ex.: link de campanha digitado errado) redireciona para a página.
+  Arquivos ocultos (`.env`, `.git`) são bloqueados.
+
 ## Antes de publicar
 
 Os botões "Indicar agora", "Baixe o app" etc. apontam para `links.app` em
