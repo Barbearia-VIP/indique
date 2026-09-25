@@ -22,7 +22,8 @@ hospedagem estática ou subpasta (GitHub Pages, Netlify, Vercel, S3…).
 
 ## Deploy em https://indique.barbearia.vip
 
-O site é publicado num servidor próprio com nginx, via [`scripts/deploy.sh`](scripts/deploy.sh)
+O site é publicado num servidor próprio com nginx, via [`scripts/deploy.sh`](scripts/deploy.sh).
+Há dois jeitos de usar: **direto no servidor** (repositório clonado nele) ou **da sua máquina**
 (build local + `rsync` por SSH). Cada deploy vira uma pasta nova em `releases/`, e o link
 `current` é trocado de forma atômica. Assim não há site "pela metade" e o rollback é instantâneo.
 
@@ -32,27 +33,47 @@ O site é publicado num servidor próprio com nginx, via [`scripts/deploy.sh`](s
 └── releases/                                     # últimas 5 versões
 ```
 
-### Pré-requisitos
+**Antes de tudo:** o DNS de `indique.barbearia.vip` (registro `A`, e `AAAA` se houver IPv6) precisa
+apontar para o servidor, com as portas 80 e 443 liberadas. Sem isso o Let's Encrypt não emite o certificado.
 
-- **DNS**: registro `A` (e `AAAA`, se houver IPv6) de `indique.barbearia.vip` apontando para o servidor.
-- **Servidor** (Ubuntu/Debian): `sudo apt install nginx certbot rsync`, portas 80 e 443 liberadas
-  e um usuário com acesso SSH por chave e `sudo` (ex.: `deploy`).
+### Direto no servidor (repositório clonado nele)
+
+Como root, com o repositório em `/opt/indique`:
+
+```bash
+apt install -y nginx certbot rsync     # e Node 22 para o build
+cd /opt/indique
+
+# 1ª vez: pastas, nginx e certificado HTTPS (pergunta o e-mail do Let's Encrypt)
+bash deploy/server-setup.sh
+
+# a cada atualização
+git pull
+DEPLOY_HOST=local scripts/deploy.sh    # build + publica + confere
+DEPLOY_HOST=local scripts/deploy.sh rollback
+```
+
+Para não repetir `DEPLOY_HOST=local`, crie o `.env.deploy` com essa linha.
+
+### Da sua máquina, por SSH
+
+- **Servidor** (Ubuntu/Debian): `sudo apt install nginx certbot rsync` e um usuário com acesso SSH por chave e `sudo` (ex.: `deploy`).
 - **Sua máquina**: Node 22, `ssh`, `rsync` e `curl`.
 
-### Configuração
+Configuração:
 
 ```bash
 cp .env.deploy.example .env.deploy   # não vai para o git
 # preencha DEPLOY_HOST, DEPLOY_USER e CERTBOT_EMAIL
 ```
 
-### Primeira vez: preparar o servidor
+Primeira vez, para preparar o servidor:
 
 ```bash
 scripts/deploy.sh setup
 ```
 
-Esse comando cria as pastas, instala [`deploy/nginx/indique.barbearia.vip.conf`](deploy/nginx/indique.barbearia.vip.conf),
+O `setup` (ou `bash deploy/server-setup.sh`, direto no servidor) cria as pastas, instala [`deploy/nginx/indique.barbearia.vip.conf`](deploy/nginx/indique.barbearia.vip.conf),
 emite o certificado HTTPS no Let's Encrypt (renovação automática do certbot, com reload do nginx)
 e valida tudo com `nginx -t` antes de recarregar. Se a validação falhar, a configuração anterior
 é restaurada. Pode ser rodado de novo sempre que a configuração do nginx mudar.
@@ -69,7 +90,7 @@ Opções (variáveis de ambiente ou `.env.deploy`):
 
 | Variável | Padrão | Para quê |
 | --- | --- | --- |
-| `DEPLOY_HOST` | — | IP ou hostname do servidor (obrigatório) |
+| `DEPLOY_HOST` | — | IP ou hostname do servidor, ou `local` para publicar na própria máquina |
 | `DEPLOY_USER` / `DEPLOY_PORT` | `deploy` / `22` | acesso SSH |
 | `DEPLOY_SSH_KEY` | — | chave SSH específica |
 | `DEPLOY_PATH` | `/var/www/indique.barbearia.vip` | pasta do site no servidor |

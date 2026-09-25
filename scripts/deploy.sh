@@ -9,6 +9,8 @@
 #
 # Configuração: arquivo .env.deploy na raiz do projeto (veja .env.deploy.example)
 # ou variáveis de ambiente com os mesmos nomes.
+# Rodando no próprio servidor (repositório clonado nele), sem SSH:
+#   DEPLOY_HOST=local scripts/deploy.sh
 #
 # Estrutura no servidor:
 #   $DEPLOY_PATH/releases/<data-hora>-<commit>/   uma pasta por versão
@@ -31,7 +33,7 @@ if [[ -f $ENV_FILE ]]; then
 fi
 
 DOMAIN="${DEPLOY_DOMAIN:-indique.barbearia.vip}"
-REMOTE_USER="${DEPLOY_USER:-deploy}"
+REMOTE_USER=
 PORT="${DEPLOY_PORT:-22}"
 REMOTE_PATH="${DEPLOY_PATH:-/var/www/$DOMAIN}"
 KEEP="${DEPLOY_KEEP_RELEASES:-5}"
@@ -41,7 +43,7 @@ log() { printf '\033[1;33m[deploy]\033[0m %s\n' "$*"; }
 ok()  { printf '\033[1;32m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[deploy] erro:\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 require() {
   local cmd
@@ -51,19 +53,34 @@ require() {
 }
 
 # ---------------------------------------------------------------------------
-# SSH (uma conexão reaproveitada por todos os comandos)
+# Destino: servidor remoto por SSH (uma conexão reaproveitada por todos os
+# comandos) ou esta própria máquina (DEPLOY_HOST=local)
 # ---------------------------------------------------------------------------
+LOCAL=0
 CONTROL_DIR=
 SSH_OPTS=()
 TARGET=
+DEST=
 
-ssh_init() {
-  [[ -n ${DEPLOY_HOST:-} ]] || die "defina DEPLOY_HOST (IP ou hostname do servidor) no .env.deploy"
+target_init() {
+  [[ -n ${DEPLOY_HOST:-} ]] ||
+    die "defina DEPLOY_HOST no .env.deploy: IP/hostname do servidor, ou 'local' para publicar nesta máquina"
   [[ $REMOTE_PATH == /* && $REMOTE_PATH != / && ${#REMOTE_PATH} -gt 5 ]] ||
     die "DEPLOY_PATH inválido: '$REMOTE_PATH'"
   [[ $KEEP =~ ^[0-9]+$ && $KEEP -ge 2 ]] || die "DEPLOY_KEEP_RELEASES deve ser um número >= 2"
 
+  if [[ $DEPLOY_HOST == local ]]; then
+    LOCAL=1
+    REMOTE_USER="${DEPLOY_USER:-${SUDO_USER:-$(id -un)}}"
+    TARGET=local
+    DEST="$REMOTE_PATH"
+    return
+  fi
+
+  require ssh
+  REMOTE_USER="${DEPLOY_USER:-deploy}"
   TARGET="$REMOTE_USER@$DEPLOY_HOST"
+  DEST="$TARGET:$REMOTE_PATH"
   CONTROL_DIR="$(mktemp -d)"
   SSH_OPTS=(-p "$PORT" -o ControlMaster=auto -o "ControlPath=$CONTROL_DIR/%C" -o ControlPersist=120)
   if [[ -n ${DEPLOY_SSH_KEY:-} ]]; then SSH_OPTS+=(-i "$DEPLOY_SSH_KEY"); fi
@@ -81,6 +98,10 @@ ssh_close() {
 remote_bash() {
   local script=$1
   shift
+  if ((LOCAL)); then
+    bash -s -- "$@" <<<"$script"
+    return
+  fi
   local args=""
   if (($#)); then args=$(printf '%q ' "$@"); fi
   ssh "${SSH_OPTS[@]}" "$TARGET" "bash -s -- $args" <<<"$script"
@@ -90,10 +111,21 @@ remote_bash() {
 # Comandos
 # ---------------------------------------------------------------------------
 cmd_setup() {
-  require ssh
-  ssh_init
+  target_init
   local conf="deploy/nginx/$DOMAIN.conf"
   [[ -f $conf ]] || die "configuração do nginx não encontrada: $conf"
+
+  if ((LOCAL)); then
+    local runner=(bash)
+    if ((EUID != 0)); then
+      require sudo
+      runner=(sudo bash)
+    fi
+    "${runner[@]}" deploy/server-setup.sh "$DOMAIN" "$REMOTE_PATH" "$REMOTE_USER" "$conf" "${CERTBOT_EMAIL:-}" ||
+      die "a preparação do servidor falhou"
+    ok "servidor pronto. Agora rode: DEPLOY_HOST=local scripts/deploy.sh"
+    return
+  fi
 
   log "enviando configuração do nginx para $TARGET"
   local tmp
@@ -112,10 +144,12 @@ cmd_setup() {
 }
 
 cmd_deploy() {
-  require ssh rsync npm
-  ssh_init
+  require rsync
+  target_init
 
   if [[ ${SKIP_BUILD:-0} != 1 ]]; then
+    command -v npm >/dev/null ||
+      die "Node.js/npm não encontrado: instale o Node 22 ou gere o build em outra máquina e use SKIP_BUILD=1"
     log "instalando dependências e gerando o build"
     npm ci --no-audit --no-fund
     npm run lint
@@ -128,7 +162,7 @@ cmd_deploy() {
   if [[ -n $(git status --porcelain 2>/dev/null) ]]; then rev="$rev-dirty"; fi
   release="$(date -u +%Y%m%d-%H%M%S)-$rev"
 
-  log "preparando a versão $release em $TARGET:$REMOTE_PATH"
+  log "preparando a versão $release em $DEST"
   local has_current
   has_current=$(remote_bash '
     set -euo pipefail
@@ -137,12 +171,16 @@ cmd_deploy() {
     if [[ -d "$1/current" ]]; then echo yes; else echo no; fi
   ' "$REMOTE_PATH" "$release")
 
-  local rsync_opts=(-az --delete "--chmod=D755,F644")
+  local rsync_opts=(-a --delete "--chmod=D755,F644")
   # Arquivos iguais aos da versão no ar viram hard links (upload e disco menores)
   if [[ $has_current == yes ]]; then rsync_opts+=("--link-dest=$REMOTE_PATH/current/"); fi
 
   log "enviando arquivos"
-  rsync "${rsync_opts[@]}" -e "ssh ${SSH_OPTS[*]}" dist/ "$TARGET:$REMOTE_PATH/releases/$release/"
+  if ((LOCAL)); then
+    rsync "${rsync_opts[@]}" dist/ "$REMOTE_PATH/releases/$release/"
+  else
+    rsync "${rsync_opts[@]}" -z -e "ssh ${SSH_OPTS[*]}" dist/ "$DEST/releases/$release/"
+  fi
 
   log "ativando a versão"
   remote_bash '
@@ -175,8 +213,11 @@ healthcheck() {
   asset=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' dist/index.html | head -n1)
   # DEPLOY_CURL_OPTS permite testar antes do DNS apontar, ex.:
   #   DEPLOY_CURL_OPTS="--resolve indique.barbearia.vip:443:203.0.113.10"
-  local curl_opts=()
-  read -ra curl_opts <<<"${DEPLOY_CURL_OPTS:-}"
+  local curl_opts=() extra=()
+  # No modo local, confere o nginx desta máquina mesmo antes do DNS apontar
+  if ((LOCAL)); then curl_opts=(--resolve "$DOMAIN:443:127.0.0.1"); fi
+  read -ra extra <<<"${DEPLOY_CURL_OPTS:-}"
+  curl_opts+=("${extra[@]}")
   log "verificando $SITE_URL"
   local html
   if ! html=$(curl -fsS --max-time 20 "${curl_opts[@]}" "$SITE_URL"); then
@@ -188,8 +229,7 @@ healthcheck() {
 }
 
 cmd_rollback() {
-  require ssh
-  ssh_init
+  target_init
   local result
   result=$(remote_bash '
     set -euo pipefail
@@ -205,8 +245,7 @@ cmd_rollback() {
 }
 
 cmd_releases() {
-  require ssh
-  ssh_init
+  target_init
   remote_bash '
     set -euo pipefail
     cd "$1"
