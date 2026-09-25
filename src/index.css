@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    @apply bg-noir-900 text-smoke-100 font-body overflow-x-clip;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    @apply bg-gold text-noir-950;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-4 outline-gold;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-noir-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-gold rounded-full; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+
+  .grain {
+    position: relative;
+  }
+  .grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.05'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .text-stroke {
+    -webkit-text-stroke: 1.5px currentColor;
+    color: transparent;
+  }
+
+  /* Slider do simulador */
+  .range-vip {
+    @apply h-2 rounded-full appearance-none cursor-pointer;
+  }
+  .range-vip::-webkit-slider-thumb {
+    @apply appearance-none w-6 h-6 rounded-full bg-gold border-4 border-noir-950;
+    box-shadow: 0 0 0 2px #ebb903, 0 4px 14px rgba(0, 0, 0, 0.5);
+  }
+  .range-vip::-moz-range-thumb {
+    @apply w-5 h-5 rounded-full bg-gold border-4 border-noir-950;
+    box-shadow: 0 0 0 2px #ebb903;
+  }
+
+  /* Faixa amarela "Indique amigos." das peças da campanha */
+  .tag-vip {
+    @apply inline-block bg-gold text-noir-950 font-display font-semibold leading-none px-3 py-1.5;
+  }
+}
